@@ -113,22 +113,37 @@ def login_and_get_cookies(email, password, task_id=None):
     try:
         logger.info("Initializing Chrome driver")
         
-        # For Render, try to use the system chromedriver
+        # For Render, try multiple approaches to initialize Chrome
         if is_render:
             try:
                 logger.info("Attempting to use system ChromeDriver on Render")
                 driver = webdriver.Chrome(options=chrome_options)
             except Exception as e:
                 logger.error(f"Failed to initialize system ChromeDriver: {str(e)}")
-                # Fall back to checking environment variables
-                if 'CHROMEDRIVER_PATH' in os.environ:
-                    logger.info(f"Falling back to CHROMEDRIVER_PATH: {os.environ.get('CHROMEDRIVER_PATH')}")
+                
+                # Try using webdriver-manager as fallback
+                try:
+                    logger.info("Attempting to use webdriver-manager")
+                    from webdriver_manager.chrome import ChromeDriverManager
+                    from selenium.webdriver.chrome.service import Service
+                    
                     driver = webdriver.Chrome(
-                        service=Service(os.environ.get('CHROMEDRIVER_PATH')),
+                        service=Service(ChromeDriverManager().install()),
                         options=chrome_options
                     )
-                else:
-                    raise Exception("Could not initialize ChromeDriver on Render")
+                    logger.info("Successfully initialized Chrome with webdriver-manager")
+                except Exception as e2:
+                    logger.error(f"Failed to initialize Chrome with webdriver-manager: {str(e2)}")
+                    
+                    # Fall back to checking environment variables
+                    if 'CHROMEDRIVER_PATH' in os.environ:
+                        logger.info(f"Falling back to CHROMEDRIVER_PATH: {os.environ.get('CHROMEDRIVER_PATH')}")
+                        driver = webdriver.Chrome(
+                            service=Service(os.environ.get('CHROMEDRIVER_PATH')),
+                            options=chrome_options
+                        )
+                    else:
+                        raise Exception("Could not initialize ChromeDriver on Render")
         else:
             # For local development
             if 'CHROMEDRIVER_PATH' in os.environ:
