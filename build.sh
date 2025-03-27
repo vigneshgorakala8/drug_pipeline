@@ -18,7 +18,7 @@ CHROME_PATH=$(which google-chrome)
 echo "Chrome path: $CHROME_PATH"
 google-chrome --version || echo "Failed to get Chrome version"
 
-# Install ChromeDriver
+# Install ChromeDriver directly from Google's CDN
 echo "Installing ChromeDriver..."
 CHROME_VERSION=$(google-chrome --version 2>/dev/null | awk '{print $3}' | cut -d '.' -f 1)
 if [ -z "$CHROME_VERSION" ]; then
@@ -73,6 +73,6 @@ echo "Installing Python dependencies..."
 pip install -r requirements.txt
 
 # Install webdriver-manager as a fallback
-pip install webdriver-manager
+pip install webdriver-manager selenium==4.9.1 python-dotenv
 
 echo "Chrome and ChromeDriver installation completed." 

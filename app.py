@@ -44,26 +44,37 @@ def get_chrome_driver():
     logger.info(f"CHROME_BIN environment variable: {chrome_bin}")
     logger.info(f"CHROMEDRIVER_PATH environment variable: {chromedriver_path}")
     
-    # Check Chrome installation
-    try:
+    # Check for Chrome binary in standard locations
+    possible_chrome_paths = [
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/local/bin/google-chrome',
+        chrome_bin  # From environment variable if set
+    ]
+    
+    chrome_path = None
+    for path in possible_chrome_paths:
+        if path and os.path.exists(path):
+            chrome_path = path
+            logger.info(f"Found Chrome binary at: {chrome_path}")
+            break
+    
+    if not chrome_path:
+        logger.warning("Chrome binary not found in any standard location")
         chrome_path = shutil.which('google-chrome')
-        logger.info(f"Chrome path from shutil.which: {chrome_path}")
         if chrome_path:
+            logger.info(f"Found Chrome using shutil.which: {chrome_path}")
+    
+    # Check Chrome installation
+    if chrome_path and os.path.exists(chrome_path):
+        try:
             chrome_version_cmd = f"{chrome_path} --version"
             chrome_version = subprocess.check_output(chrome_version_cmd, shell=True).decode('utf-8').strip()
             logger.info(f"Chrome version: {chrome_version}")
-        else:
-            logger.warning("Chrome not found in PATH using shutil.which")
-            # Try using the environment variable
-            if chrome_bin:
-                chrome_version_cmd = f"{chrome_bin} --version"
-                try:
-                    chrome_version = subprocess.check_output(chrome_version_cmd, shell=True).decode('utf-8').strip()
-                    logger.info(f"Chrome version from CHROME_BIN: {chrome_version}")
-                except Exception as e:
-                    logger.error(f"Error getting Chrome version from CHROME_BIN: {str(e)}")
-    except Exception as e:
-        logger.error(f"Error checking Chrome installation: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error getting Chrome version: {str(e)}")
+    else:
+        logger.error("Chrome binary not found or not executable")
     
     # Set up Chrome options
     chrome_options = Options()
@@ -100,15 +111,30 @@ def get_chrome_driver():
     chrome_options.add_experimental_option('useAutomationExtension', False)
     
     # Set Chrome binary location if available
-    if chrome_bin:
-        chrome_options.binary_location = chrome_bin
-        logger.info(f"Set Chrome binary location to: {chrome_bin}")
+    if chrome_path and os.path.exists(chrome_path):
+        chrome_options.binary_location = chrome_path
+        logger.info(f"Set Chrome binary location to: {chrome_path}")
     
     # Try different methods to initialize the Chrome driver
     driver = None
     errors = []
     
-    # Method 1: Try using the ChromeDriver path from environment variable
+    # Method 1: Try using webdriver-manager (most reliable on Render)
+    if not driver:
+        try:
+            logger.info("Attempting to initialize Chrome with webdriver-manager")
+            from webdriver_manager.chrome import ChromeDriverManager
+            from webdriver_manager.core.utils import ChromeType
+            
+            service = Service(ChromeDriverManager(chrome_type=ChromeType.GOOGLE).install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info("Successfully initialized Chrome with webdriver-manager")
+        except Exception as e:
+            error_msg = f"Failed to initialize Chrome with webdriver-manager: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+    
+    # Method 2: Try using the ChromeDriver path from environment variable
     if chromedriver_path and not driver:
         try:
             logger.info(f"Attempting to initialize Chrome with ChromeDriver from CHROMEDRIVER_PATH: {chromedriver_path}")
@@ -120,7 +146,7 @@ def get_chrome_driver():
             logger.error(error_msg)
             errors.append(error_msg)
     
-    # Method 2: Try using the system ChromeDriver
+    # Method 3: Try using the system ChromeDriver
     if not driver:
         try:
             logger.info("Attempting to initialize Chrome with system ChromeDriver")
@@ -128,19 +154,6 @@ def get_chrome_driver():
             logger.info("Successfully initialized Chrome with system ChromeDriver")
         except Exception as e:
             error_msg = f"Failed to initialize Chrome with system ChromeDriver: {str(e)}"
-            logger.error(error_msg)
-            errors.append(error_msg)
-    
-    # Method 3: Try using webdriver-manager
-    if not driver:
-        try:
-            logger.info("Attempting to initialize Chrome with webdriver-manager")
-            from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            logger.info("Successfully initialized Chrome with webdriver-manager")
-        except Exception as e:
-            error_msg = f"Failed to initialize Chrome with webdriver-manager: {str(e)}"
             logger.error(error_msg)
             errors.append(error_msg)
     
