@@ -15,6 +15,10 @@ import traceback
 import platform
 import subprocess
 import shutil
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if it exists
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -26,25 +30,38 @@ app = Flask(__name__)
 # Store results of background tasks
 task_results = {}
 
-def login_and_get_cookies(email, password, task_id=None):
-    logger.info(f"Starting login process for task_id: {task_id}")
+def get_chrome_driver():
+    """Initialize and return a Chrome WebDriver with appropriate configuration"""
+    logger.info("Setting up Chrome WebDriver")
     
     # Check if running on Render
     is_render = 'RENDER' in os.environ
     logger.info(f"Running on Render: {is_render}")
     
+    # Log environment variables
+    chrome_bin = os.environ.get('CHROME_BIN')
+    chromedriver_path = os.environ.get('CHROMEDRIVER_PATH')
+    logger.info(f"CHROME_BIN environment variable: {chrome_bin}")
+    logger.info(f"CHROMEDRIVER_PATH environment variable: {chromedriver_path}")
+    
     # Check Chrome installation
     try:
         chrome_path = shutil.which('google-chrome')
-        logger.info(f"Chrome path: {chrome_path}")
+        logger.info(f"Chrome path from shutil.which: {chrome_path}")
         if chrome_path:
             chrome_version_cmd = f"{chrome_path} --version"
             chrome_version = subprocess.check_output(chrome_version_cmd, shell=True).decode('utf-8').strip()
             logger.info(f"Chrome version: {chrome_version}")
         else:
-            logger.error("Chrome not found in PATH")
-            if is_render:
-                logger.error("Chrome installation may have failed in build.sh")
+            logger.warning("Chrome not found in PATH using shutil.which")
+            # Try using the environment variable
+            if chrome_bin:
+                chrome_version_cmd = f"{chrome_bin} --version"
+                try:
+                    chrome_version = subprocess.check_output(chrome_version_cmd, shell=True).decode('utf-8').strip()
+                    logger.info(f"Chrome version from CHROME_BIN: {chrome_version}")
+                except Exception as e:
+                    logger.error(f"Error getting Chrome version from CHROME_BIN: {str(e)}")
     except Exception as e:
         logger.error(f"Error checking Chrome installation: {str(e)}")
     
@@ -82,83 +99,72 @@ def login_and_get_cookies(email, password, task_id=None):
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     
-    # Check Chrome and ChromeDriver availability on Render
-    if is_render:
-        try:
-            # Log Chrome version
-            chrome_version_cmd = "google-chrome --version"
-            chrome_version = subprocess.check_output(chrome_version_cmd, shell=True).decode('utf-8').strip()
-            logger.info(f"Chrome version: {chrome_version}")
-            
-            # Check if chromedriver is available
-            chromedriver_path = shutil.which('chromedriver')
-            logger.info(f"ChromeDriver path: {chromedriver_path}")
-            
-            if chromedriver_path:
-                # Log ChromeDriver version
-                driver_version_cmd = f"{chromedriver_path} --version"
-                driver_version = subprocess.check_output(driver_version_cmd, shell=True).decode('utf-8').strip()
-                logger.info(f"ChromeDriver version: {driver_version}")
-            else:
-                logger.error("ChromeDriver not found in PATH")
-        except Exception as e:
-            logger.error(f"Error checking Chrome/ChromeDriver versions: {str(e)}")
+    # Set Chrome binary location if available
+    if chrome_bin:
+        chrome_options.binary_location = chrome_bin
+        logger.info(f"Set Chrome binary location to: {chrome_bin}")
     
-    # Heroku-specific Chrome configuration
-    if 'GOOGLE_CHROME_BIN' in os.environ:
-        chrome_options.binary_location = os.environ.get('GOOGLE_CHROME_BIN')
-        logger.info(f"Using Chrome binary from GOOGLE_CHROME_BIN: {os.environ.get('GOOGLE_CHROME_BIN')}")
+    # Try different methods to initialize the Chrome driver
+    driver = None
+    errors = []
+    
+    # Method 1: Try using the ChromeDriver path from environment variable
+    if chromedriver_path and not driver:
+        try:
+            logger.info(f"Attempting to initialize Chrome with ChromeDriver from CHROMEDRIVER_PATH: {chromedriver_path}")
+            service = Service(executable_path=chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info("Successfully initialized Chrome with CHROMEDRIVER_PATH")
+        except Exception as e:
+            error_msg = f"Failed to initialize Chrome with CHROMEDRIVER_PATH: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+    
+    # Method 2: Try using the system ChromeDriver
+    if not driver:
+        try:
+            logger.info("Attempting to initialize Chrome with system ChromeDriver")
+            driver = webdriver.Chrome(options=chrome_options)
+            logger.info("Successfully initialized Chrome with system ChromeDriver")
+        except Exception as e:
+            error_msg = f"Failed to initialize Chrome with system ChromeDriver: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+    
+    # Method 3: Try using webdriver-manager
+    if not driver:
+        try:
+            logger.info("Attempting to initialize Chrome with webdriver-manager")
+            from webdriver_manager.chrome import ChromeDriverManager
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info("Successfully initialized Chrome with webdriver-manager")
+        except Exception as e:
+            error_msg = f"Failed to initialize Chrome with webdriver-manager: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+    
+    # If all methods failed, raise an exception
+    if not driver:
+        error_message = "Failed to initialize Chrome WebDriver. Errors:\n" + "\n".join(errors)
+        logger.error(error_message)
+        raise Exception(error_message)
+    
+    # Set the window size explicitly after browser initialization
+    driver.set_window_size(1920, 1080)
+    
+    # Set shorter page load timeout
+    driver.set_page_load_timeout(30)
+    
+    return driver
+
+def login_and_get_cookies(email, password, task_id=None):
+    logger.info(f"Starting login process for task_id: {task_id}")
     
     driver = None
     try:
-        logger.info("Initializing Chrome driver")
-        
-        # For Render, try multiple approaches to initialize Chrome
-        if is_render:
-            try:
-                logger.info("Attempting to use system ChromeDriver on Render")
-                driver = webdriver.Chrome(options=chrome_options)
-            except Exception as e:
-                logger.error(f"Failed to initialize system ChromeDriver: {str(e)}")
-                
-                # Try using webdriver-manager as fallback
-                try:
-                    logger.info("Attempting to use webdriver-manager")
-                    from webdriver_manager.chrome import ChromeDriverManager
-                    from selenium.webdriver.chrome.service import Service
-                    
-                    driver = webdriver.Chrome(
-                        service=Service(ChromeDriverManager().install()),
-                        options=chrome_options
-                    )
-                    logger.info("Successfully initialized Chrome with webdriver-manager")
-                except Exception as e2:
-                    logger.error(f"Failed to initialize Chrome with webdriver-manager: {str(e2)}")
-                    
-                    # Fall back to checking environment variables
-                    if 'CHROMEDRIVER_PATH' in os.environ:
-                        logger.info(f"Falling back to CHROMEDRIVER_PATH: {os.environ.get('CHROMEDRIVER_PATH')}")
-                        driver = webdriver.Chrome(
-                            service=Service(os.environ.get('CHROMEDRIVER_PATH')),
-                            options=chrome_options
-                        )
-                    else:
-                        raise Exception("Could not initialize ChromeDriver on Render")
-        else:
-            # For local development
-            if 'CHROMEDRIVER_PATH' in os.environ:
-                driver = webdriver.Chrome(
-                    service=Service(os.environ.get('CHROMEDRIVER_PATH')),
-                    options=chrome_options
-                )
-            else:
-                driver = webdriver.Chrome(options=chrome_options)
-        
-        # Set the window size explicitly after browser initialization
-        driver.set_window_size(1920, 1080)
-        
-        # Set shorter page load timeout
-        driver.set_page_load_timeout(30)
+        # Initialize the Chrome WebDriver
+        driver = get_chrome_driver()
         
         # Navigate to the login page
         logger.info("Navigating to login page")
