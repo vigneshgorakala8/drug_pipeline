@@ -33,6 +33,21 @@ def login_and_get_cookies(email, password, task_id=None):
     is_render = 'RENDER' in os.environ
     logger.info(f"Running on Render: {is_render}")
     
+    # Check Chrome installation
+    try:
+        chrome_path = shutil.which('google-chrome')
+        logger.info(f"Chrome path: {chrome_path}")
+        if chrome_path:
+            chrome_version_cmd = f"{chrome_path} --version"
+            chrome_version = subprocess.check_output(chrome_version_cmd, shell=True).decode('utf-8').strip()
+            logger.info(f"Chrome version: {chrome_version}")
+        else:
+            logger.error("Chrome not found in PATH")
+            if is_render:
+                logger.error("Chrome installation may have failed in build.sh")
+    except Exception as e:
+        logger.error(f"Error checking Chrome installation: {str(e)}")
+    
     # Set up Chrome options
     chrome_options = Options()
     
@@ -84,8 +99,10 @@ def login_and_get_cookies(email, password, task_id=None):
                 driver_version_cmd = f"{chromedriver_path} --version"
                 driver_version = subprocess.check_output(driver_version_cmd, shell=True).decode('utf-8').strip()
                 logger.info(f"ChromeDriver version: {driver_version}")
+            else:
+                logger.error("ChromeDriver not found in PATH")
         except Exception as e:
-            logger.warning(f"Error checking Chrome/ChromeDriver versions: {str(e)}")
+            logger.error(f"Error checking Chrome/ChromeDriver versions: {str(e)}")
     
     # Heroku-specific Chrome configuration
     if 'GOOGLE_CHROME_BIN' in os.environ:
