@@ -7,11 +7,24 @@ from selenium.webdriver.support import expected_conditions as EC
 import time
 import json
 import os
+import logging
 from flask import Flask, jsonify, request
+from threading import Thread
+from queue import Queue
+import traceback
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-def login_and_get_cookies(email, password):
+# Store results of background tasks
+task_results = {}
+
+def login_and_get_cookies(email, password, task_id=None):
+    logger.info(f"Starting login process for task_id: {task_id}")
     # Set up Chrome options
     chrome_options = Options()
     
@@ -43,36 +56,45 @@ def login_and_get_cookies(email, password):
     if 'GOOGLE_CHROME_BIN' in os.environ:
         chrome_options.binary_location = os.environ.get('GOOGLE_CHROME_BIN')
     
-    if 'CHROMEDRIVER_PATH' in os.environ:
-        driver = webdriver.Chrome(
-            service=Service(os.environ.get('CHROMEDRIVER_PATH')),
-            options=chrome_options
-        )
-    else:
-        # Initialize the Chrome driver for local development
-        driver = webdriver.Chrome(options=chrome_options)
-    
+    driver = None
     try:
+        logger.info("Initializing Chrome driver")
+        if 'CHROMEDRIVER_PATH' in os.environ:
+            driver = webdriver.Chrome(
+                service=Service(os.environ.get('CHROMEDRIVER_PATH')),
+                options=chrome_options
+            )
+        else:
+            # Initialize the Chrome driver for local development
+            driver = webdriver.Chrome(options=chrome_options)
+        
         # Set the window size explicitly after browser initialization
         driver.set_window_size(1920, 1080)
         
+        # Set shorter page load timeout
+        driver.set_page_load_timeout(30)
+        
         # Navigate to the login page
+        logger.info("Navigating to login page")
         driver.get("https://www.biopharmcatalyst.com/account/login")
         
         # Reduced initial wait time
-        time.sleep(1.5)
+        time.sleep(1)
         
         # Wait for the login form to load with shorter timeout
+        logger.info("Waiting for login form")
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.TAG_NAME, "form"))
         )
         
         # Find the email and password fields - optimized selectors
+        logger.info("Finding login form elements")
         try:
             email_field = driver.find_element(By.CSS_SELECTOR, "input[type='email']")
             password_field = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+            logger.info("Found email and password fields with CSS selectors")
         except Exception as e:
-            print(f"Could not find inputs with CSS selectors. Error: {e}")
+            logger.warning(f"Could not find inputs with CSS selectors. Error: {e}")
             # Try alternative selectors
             try:
                 form = driver.find_element(By.TAG_NAME, "form")
@@ -80,44 +102,91 @@ def login_and_get_cookies(email, password):
                 if len(inputs) >= 2:
                     email_field = inputs[0]  # First input in form
                     password_field = inputs[1]  # Second input in form
+                    logger.info("Found email and password fields with form inputs")
                 else:
                     raise Exception("Could not locate email and password fields")
             except Exception as e2:
-                print(f"Could not find inputs with form inputs. Error: {e2}")
+                logger.warning(f"Could not find inputs with form inputs. Error: {e2}")
                 # Last resort with XPath
                 email_field = driver.find_element(By.XPATH, "//label[contains(text(), 'Email')]/following-sibling::input")
                 password_field = driver.find_element(By.XPATH, "//label[contains(text(), 'Password')]/following-sibling::input")
+                logger.info("Found email and password fields with XPath")
         
         # Enter credentials
+        logger.info("Entering credentials")
         email_field.send_keys(email)
         password_field.send_keys(password)
         
         # Click the login button - optimized selector
+        logger.info("Clicking login button")
         try:
             login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+            logger.info("Found login button with CSS selector")
         except:
             try:
                 login_button = driver.find_element(By.XPATH, "//button[text()='Login']")
+                logger.info("Found login button with XPath")
             except:
                 form = driver.find_element(By.TAG_NAME, "form")
                 login_button = form.find_element(By.TAG_NAME, "button")
+                logger.info("Found login button with form button")
         
         login_button.click()
         
         # Wait for login to complete - reduced wait time
-        time.sleep(3)
+        logger.info("Waiting for login to complete")
+        time.sleep(2)
         
         # Get all cookies
+        logger.info("Retrieving cookies")
         cookies = driver.get_cookies()
         
-        return cookies
+        # Extract only the specific cookies we need
+        biopharm_session = None
+        xsrf_token = None
+        
+        for cookie in cookies:
+            if cookie['name'] == 'biopharm_user_session':
+                biopharm_session = cookie['value']
+            elif cookie['name'] == 'XSRF-TOKEN':
+                xsrf_token = cookie['value']
+        
+        result = {
+            "success": True,
+            "XSRF-TOKEN": xsrf_token,
+            "biopharm_user_session": biopharm_session
+        }
+        
+        if not biopharm_session or not xsrf_token:
+            result["success"] = False
+            result["error"] = "Failed to retrieve required cookies"
+            
+        logger.info(f"Login process completed for task_id: {task_id}")
+        
+        if task_id:
+            task_results[task_id] = result
+            
+        return result
         
     except Exception as e:
-        print(f"An error occurred: {e}")
-        raise
+        error_msg = f"An error occurred: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        result = {
+            "success": False,
+            "error": str(e)
+        }
+        if task_id:
+            task_results[task_id] = result
+        return result
     finally:
         # Close the browser
-        driver.quit()
+        if driver:
+            logger.info("Closing browser")
+            driver.quit()
+
+def background_login(email, password, task_id):
+    """Run the login process in a background thread"""
+    login_and_get_cookies(email, password, task_id)
 
 @app.route('/')
 def home():
@@ -130,30 +199,59 @@ def login():
     if not data or 'email' not in data or 'password' not in data:
         return jsonify({"error": "Email and password are required"}), 400
     
-    try:
-        all_cookies = login_and_get_cookies(data['email'], data['password'])
+    # Check if async parameter is provided and true
+    use_async = data.get('async', False)
+    
+    if use_async:
+        # Generate a task ID
+        task_id = str(time.time())
         
-        # Extract only the specific cookies we need
-        biopharm_session = None
-        xsrf_token = None
+        # Start background task
+        thread = Thread(target=background_login, args=(data['email'], data['password'], task_id))
+        thread.daemon = True
+        thread.start()
         
-        for cookie in all_cookies:
-            if cookie['name'] == 'biopharm_user_session':
-                biopharm_session = cookie['value']
-            elif cookie['name'] == 'XSRF-TOKEN':
-                xsrf_token = cookie['value']
+        return jsonify({
+            "task_id": task_id,
+            "message": "Login process started in background"
+        }), 202
+    else:
+        # Synchronous approach with timeout protection
+        try:
+            result = login_and_get_cookies(data['email'], data['password'])
+            
+            if result.get("success", False):
+                return jsonify({
+                    "XSRF-TOKEN": result.get("XSRF-TOKEN"),
+                    "biopharm_user_session": result.get("biopharm_user_session")
+                }), 200
+            else:
+                return jsonify({"error": result.get("error", "Unknown error")}), 500
+                
+        except Exception as e:
+            logger.error(f"Error in login route: {str(e)}")
+            return jsonify({"error": str(e)}), 500
+
+@app.route('/task/<task_id>', methods=['GET'])
+def check_task(task_id):
+    """Check the status of a background task"""
+    if task_id in task_results:
+        result = task_results[task_id]
         
-        # Return JSON response with the cookies
-        if biopharm_session and xsrf_token:
+        # Clean up the result if it's completed
+        if result.get("success", False):
+            # Remove from storage to free memory
+            task_data = task_results.pop(task_id)
             return jsonify({
-                "XSRF-TOKEN": xsrf_token,
-                "biopharm_user_session": biopharm_session
+                "XSRF-TOKEN": task_data.get("XSRF-TOKEN"),
+                "biopharm_user_session": task_data.get("biopharm_user_session")
             }), 200
         else:
-            return jsonify({"error": "Failed to retrieve required cookies"}), 500
-            
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+            # Remove from storage to free memory
+            task_data = task_results.pop(task_id)
+            return jsonify({"error": task_data.get("error", "Unknown error")}), 500
+    else:
+        return jsonify({"status": "pending", "message": "Task is still processing or does not exist"}), 202
 
 if __name__ == "__main__":
     # For local development
