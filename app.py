@@ -12,6 +12,9 @@ from flask import Flask, jsonify, request
 from threading import Thread
 from queue import Queue
 import traceback
+import platform
+import subprocess
+import shutil
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -25,6 +28,11 @@ task_results = {}
 
 def login_and_get_cookies(email, password, task_id=None):
     logger.info(f"Starting login process for task_id: {task_id}")
+    
+    # Check if running on Render
+    is_render = 'RENDER' in os.environ
+    logger.info(f"Running on Render: {is_render}")
+    
     # Set up Chrome options
     chrome_options = Options()
     
@@ -39,6 +47,13 @@ def login_and_get_cookies(email, password, task_id=None):
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     
+    # Additional options for Render environment
+    if is_render:
+        chrome_options.add_argument("--disable-software-rasterizer")
+        chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+        chrome_options.add_argument("--single-process")
+        chrome_options.add_argument("--disable-setuid-sandbox")
+    
     # Performance optimizations
     chrome_options.add_argument("--disable-extensions")
     chrome_options.add_argument("--disable-infobars")
@@ -52,21 +67,60 @@ def login_and_get_cookies(email, password, task_id=None):
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     
+    # Check Chrome and ChromeDriver availability on Render
+    if is_render:
+        try:
+            # Log Chrome version
+            chrome_version_cmd = "google-chrome --version"
+            chrome_version = subprocess.check_output(chrome_version_cmd, shell=True).decode('utf-8').strip()
+            logger.info(f"Chrome version: {chrome_version}")
+            
+            # Check if chromedriver is available
+            chromedriver_path = shutil.which('chromedriver')
+            logger.info(f"ChromeDriver path: {chromedriver_path}")
+            
+            if chromedriver_path:
+                # Log ChromeDriver version
+                driver_version_cmd = f"{chromedriver_path} --version"
+                driver_version = subprocess.check_output(driver_version_cmd, shell=True).decode('utf-8').strip()
+                logger.info(f"ChromeDriver version: {driver_version}")
+        except Exception as e:
+            logger.warning(f"Error checking Chrome/ChromeDriver versions: {str(e)}")
+    
     # Heroku-specific Chrome configuration
     if 'GOOGLE_CHROME_BIN' in os.environ:
         chrome_options.binary_location = os.environ.get('GOOGLE_CHROME_BIN')
+        logger.info(f"Using Chrome binary from GOOGLE_CHROME_BIN: {os.environ.get('GOOGLE_CHROME_BIN')}")
     
     driver = None
     try:
         logger.info("Initializing Chrome driver")
-        if 'CHROMEDRIVER_PATH' in os.environ:
-            driver = webdriver.Chrome(
-                service=Service(os.environ.get('CHROMEDRIVER_PATH')),
-                options=chrome_options
-            )
+        
+        # For Render, try to use the system chromedriver
+        if is_render:
+            try:
+                logger.info("Attempting to use system ChromeDriver on Render")
+                driver = webdriver.Chrome(options=chrome_options)
+            except Exception as e:
+                logger.error(f"Failed to initialize system ChromeDriver: {str(e)}")
+                # Fall back to checking environment variables
+                if 'CHROMEDRIVER_PATH' in os.environ:
+                    logger.info(f"Falling back to CHROMEDRIVER_PATH: {os.environ.get('CHROMEDRIVER_PATH')}")
+                    driver = webdriver.Chrome(
+                        service=Service(os.environ.get('CHROMEDRIVER_PATH')),
+                        options=chrome_options
+                    )
+                else:
+                    raise Exception("Could not initialize ChromeDriver on Render")
         else:
-            # Initialize the Chrome driver for local development
-            driver = webdriver.Chrome(options=chrome_options)
+            # For local development
+            if 'CHROMEDRIVER_PATH' in os.environ:
+                driver = webdriver.Chrome(
+                    service=Service(os.environ.get('CHROMEDRIVER_PATH')),
+                    options=chrome_options
+                )
+            else:
+                driver = webdriver.Chrome(options=chrome_options)
         
         # Set the window size explicitly after browser initialization
         driver.set_window_size(1920, 1080)
